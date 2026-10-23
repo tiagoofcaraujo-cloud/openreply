@@ -81,6 +81,11 @@ const FOLLOW_RECHECK_TOTAL_MS = FOLLOW_RECHECK_DELAYS_MS.reduce(
   0
 );
 
+// When set, a follow status Instagram could not report (null) on a button tap
+// counts as not following, so the link is only ever sent to confirmed
+// followers. Off by default: fail-open never traps a real follower.
+const FOLLOW_GATE_STRICT = process.env.FOLLOW_GATE_STRICT === "true";
+
 /**
  * Sends Meta answered with an error but may well have delivered anyway.
  *
@@ -966,9 +971,10 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   // Follow-gate: before revealing the link, verify the user follows. On a
   // `followcheck:` tap a non-follower gets the prompt again (no quota spent);
   // on a read fallback a non-follower is silently skipped — the gate must not
-  // be bypassable by just reading the DM and waiting. On a tap, following or
-  // unverifiable (null) falls through and delivers the link — fail-open so a
-  // real follower is never trapped.
+  // be bypassable by just reading the DM and waiting. On a tap, unverifiable
+  // (null) falls through and delivers the link — fail-open so a real follower
+  // is never trapped — unless FOLLOW_GATE_STRICT is set, which treats null as
+  // not following and keeps re-prompting until a follow is confirmed.
   if ((isFollowCheck || fallback) && automation.requireFollow) {
     const follows = await getUserFollowStatus({
       context: accessToken,
@@ -979,7 +985,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     // "User consent is required", i.e. null), so failing open here handed the
     // link to anyone who read the opening DM and waited, follower or not.
     if (fallback && follows !== true) return;
-    if (follows === false) {
+    if (follows === false || (follows === null && FOLLOW_GATE_STRICT)) {
       if (fallback) return;
 
       // A tap on an opening-DM button is not a claim to follow — most people
@@ -1050,8 +1056,14 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
           .catch(() => {});
       }
 
+      // Someone who tapped the prompt's own button and is still not following
+      // can get a distinct "not yet" message instead of the same prompt again.
+      const notYetMessage = fromOpeningDm
+        ? undefined
+        : process.env.FOLLOW_NOT_YET_MESSAGE?.trim();
       const promptText = renderMessageWithoutLink({
         message:
+          notYetMessage ||
           automation.followPromptMessage ||
           "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over",
         commenterName,
