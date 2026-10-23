@@ -11,5 +11,5 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - run: curl -fsS -m 60 --retry 3 https://openreply-worker.onrender.com/ || true
+      - run: curl -fsS -m 60 --retry 3 https://openreply-worker-jabg.onrender.com/ || true
       - run: curl -fsS -m 60 https://openreply-alpha-blond.vercel.app/api/health || true
