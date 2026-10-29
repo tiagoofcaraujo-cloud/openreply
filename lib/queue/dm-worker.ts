@@ -885,6 +885,36 @@ async function sendFollowRecheckAck({
   }
 }
 
+// Taps seconds apart on the same button are one intent, not several: people
+// tap again when the reply does not show up instantly, and every tap sends its
+// own DM. A burst like that (seven taps in four seconds, observed) is what
+// Instagram's anti-spam limit (error 368) reacts to, and once it trips it
+// blocks the replies to everyone else too. Opt-in through
+// POSTBACK_TAP_COOLDOWN_MS.
+//
+// Keyed by the full payload, so tapping the opening DM's button and then "I'm
+// following" right after are never collapsed into one. Fails open: a Redis
+// error must not cost someone their link.
+async function claimTapCooldown(
+  userId: string,
+  payload: string
+): Promise<boolean> {
+  const cooldownMs = Number(process.env.POSTBACK_TAP_COOLDOWN_MS);
+  if (!(cooldownMs > 0)) return true;
+  try {
+    const first = await getRedisConnection().set(
+      `postback_tap_cooldown:${userId}:${payload}`,
+      "1",
+      "PX",
+      cooldownMs,
+      "NX"
+    );
+    return first === "OK";
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Deliver the reveal message after a user taps an opening DM's button.
  * The postback payload is `reveal:<automationId>`; the sender is the user's
@@ -956,6 +986,18 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
       `${job.id}:${automation.id}`,
     );
   } catch {
+    return;
+  }
+
+  // Delayed re-checks, read fallbacks and job retries are not taps, so the
+  // cooldown never holds them back.
+  if (
+    !fallback &&
+    !job.data.followRecheck &&
+    job.attemptsMade === 0 &&
+    !(await claimTapCooldown(userId, payload))
+  ) {
+    console.log(`[DM Worker] Ignored repeat tap (${automation.id})`);
     return;
   }
 

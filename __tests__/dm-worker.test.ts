@@ -1669,6 +1669,73 @@ describe("DM Worker — follow re-check acknowledgement", () => {
   });
 });
 
+describe("DM Worker — repeat tap cooldown", () => {
+  const tap = {
+    instagramAccountId: "ig_456",
+    userId: "commenter_999",
+    payload: "reveal:auto_789",
+  };
+  const mockRedisSet = vi.fn();
+
+  beforeEach(() => {
+    process.env.POSTBACK_TAP_COOLDOWN_MS = "15000";
+    mockRedisSet.mockReset().mockResolvedValue("OK");
+    vi.mocked(getRedisConnection).mockReturnValue({ set: mockRedisSet } as never);
+    mockPrisma.automation.findMany.mockResolvedValue([]);
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      ...mockAutomation,
+      trackedLinks: [],
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.POSTBACK_TAP_COOLDOWN_MS;
+  });
+
+  it("answers a burst of taps on the same button only once", async () => {
+    mockRedisSet.mockResolvedValueOnce("OK").mockResolvedValueOnce(null);
+
+    await getProcessor()(createMockPostbackJob(tap));
+    await getProcessor()(createMockPostbackJob(tap));
+
+    expect(mockSendDirectMessage).toHaveBeenCalledTimes(1);
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      "postback_tap_cooldown:commenter_999:reveal:auto_789",
+      "1",
+      "PX",
+      15000,
+      "NX"
+    );
+  });
+
+  it("never holds back a retry of a tap that failed", async () => {
+    mockRedisSet.mockResolvedValue(null);
+
+    await getProcessor()({ ...createMockPostbackJob(tap), attemptsMade: 1 });
+
+    expect(mockSendDirectMessage).toHaveBeenCalledTimes(1);
+    expect(mockRedisSet).not.toHaveBeenCalled();
+  });
+
+  it("delivers when Redis cannot be reached", async () => {
+    mockRedisSet.mockRejectedValue(new Error("redis down"));
+
+    await getProcessor()(createMockPostbackJob(tap));
+
+    expect(mockSendDirectMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("is off unless configured", async () => {
+    delete process.env.POSTBACK_TAP_COOLDOWN_MS;
+
+    await getProcessor()(createMockPostbackJob(tap));
+    await getProcessor()(createMockPostbackJob(tap));
+
+    expect(mockSendDirectMessage).toHaveBeenCalledTimes(2);
+    expect(mockRedisSet).not.toHaveBeenCalled();
+  });
+});
+
 describe("ambiguous Meta sends and durable comment claims", () => {
   const withLinks = { ...mockAutomation, trackedLinks: [{ slug: "resource", label: null, destinationUrl: "https://example.com" }] };
 
